@@ -66,6 +66,9 @@ def mega_loop(self):
 
     agent.stopstim_applied = [ np.zeros(len(actionchannels)) for i in stop_iter]
     agent.optstim_applied = [ np.zeros(len(actionchannels)) for i in opt_iter]
+    # --- Late stop (post-decision) state ---
+    agent.late_stop_active = [False for i in stop_iter]
+    agent.late_stop_timer = [0 for i in stop_iter]
 
 
     #trial_wise_stop_duration = [self.stop_signal_duration[i] for i in stop_iter]
@@ -84,10 +87,35 @@ def mega_loop(self):
         stop_type = 'early'
 
     elif self.stop_signal_onset_type == "late": 
-        stop_onset = [np.round(np.random.normal(self.stop_signal_onset[i][0], self.stop_signal_onset[i][1]), 0) for i in stop_iter]
+        stop_onset = [np.abs(np.round(np.random.normal(self.stop_signal_onset[i][0], self.stop_signal_onset[i][1]), 0)) for i in stop_iter]
         stop_type = 'late'
     
+    elif self.stop_signal_onset_type == "mixed": 
+        
+        if np.random.rand() < 0.9:
+            
+            if self.stop_signal_context == "early":
+                
+                stop_onset = [np.abs(np.round(np.random.normal(self.stop_signal_onset[i][0], self.stop_signal_onset[i][1]), 0)) for i in stop_iter]
+                stop_type = 'early'
+
+            elif self.stop_signal_context == "late": 
+
+                stop_onset = [np.abs(np.round(np.random.normal(self.stop_signal_onset[i][0], self.stop_signal_onset[i][1]), 0)) for i in stop_iter]
+                stop_type = 'late'
+                        
+            elif self.stop_signal_context == "uniform":
+
+                stop_onset = [np.round(np.random.uniform(self.stop_signal_onset[i][0], self.stop_signal_onset[i][1]), 0) for i in stop_iter]
+                stop_type = 'uniform'
+
+                    
+        else: 
+            
+            stop_onset = [np.random.choice(self.stop_signal_probes[i]) for i in stop_iter]
+            stop_type = 'probe'
     else: 
+        
         print('error SSD type')
         
     stop_duration = [self.choice_timeout - stop_onset[i] for i in stop_iter]
@@ -218,7 +246,7 @@ def mega_loop(self):
             #stop_onset = [np.random.choice(self.stop_signal_onset[i]) for i in stop_iter]
         for i in stop_iter:
             
-            if self.stop_signal_present[i] == True and agent.motor_queued is None:
+            if self.stop_signal_present[i] == True: #and agent.motor_queued is None:
                 
                 if self.trial_num in self.stop_list_trials_list[i]:
     
@@ -232,20 +260,24 @@ def mega_loop(self):
                          
                          if agent.stoptimer[i] == stop_onset[i]:
                              
-                             agent.dpmn_cortex[agent.in_popids[0]] *= 0
+                             print("stop stim started")
                              
+                             agent.dpmn_cortex[agent.in_popids[0]] *= 0
+                                 
                              if self.corticoiSPN_plasticity_present == False:
                                  agent.dpmn_cortex_stop[agent.stop_popid[0]] *= 0 #np.zeros((1, len(agent.dpmn_cortex_stop[agent.stop_popid[0]])))
                              else: 
                                  agent.dpmn_cortex_stop[agent.stop_popid[0]] *= 0
                                  agent.dpmn_cortex_stop[agent.stop_popid[0]] += untrace(1) 
                                  
-                             print("stop stim started")
-                             
                              for action_idx in range(len(agent.stop_popids[i])):
                                  if self.stop_channels_dfs[i].iloc[self.trial_num][action_idx]:
                                      popid = agent.stop_popids[i][action_idx]
                                      agent.FreqExt_AMPA[popid] = agent.FreqExt_AMPA_basestim[popid] + stop_amp[i]
+
+                                     # DECAY RESET (tied to spike event)              
+                                     agent.CxS_decay_start_time = agent.globaltimer
+                                     agent.CxS_decay_amp[popid] = stop_amp[i]
 
                      elif isinstance(self.stop_duration_dfs[i].iloc[0][0],str):
                          agent.dpmn_cortex[agent.in_popids[0]] *= 0
@@ -285,8 +317,8 @@ def mega_loop(self):
                         else:
                             agent.dpmn_cortex[agent.in_popids[0]] *= 0
                             agent.dpmn_cortex[agent.in_popids[0]] += untrace(1)
-                            
 
+        
         #Opto
         for i in opt_iter:
             if self.opt_signal_present[i] == True:
@@ -401,6 +433,17 @@ def mega_loop(self):
                 
                 datatables_decisionduration = agent.globaltimer - datatables_stimulusstarttime
                 current_rt = agent.globaltimer - datatables_stimulusstarttime
+
+                for i in stop_iter: 
+                    if self.trial_num in self.stop_list_trials_list[i]:
+
+                        is_late_stop = (current_rt < stop_onset[i] and not agent.late_stop_active[i])
+                        if is_late_stop:
+                     
+                             agent.late_stop_active[i] = True
+                             late_stop_duration = 10. 
+                             agent.late_stop_end_time = datatables_stimulusstarttime + stop_onset[i] + late_stop_duration
+                             print("LATE STOP TRIGGERED", self.trial_num, current_rt, stop_onset[i], agent.late_stop_active[i], datatables_stopduration)
                 
                 print('current_rt', current_rt, ' trial num', self.trial_num)
                 
@@ -454,18 +497,7 @@ def mega_loop(self):
                 print('self.ttype:', self.ttype)
                 print("chosen_action:",self.chosen_action)
 
-                #for i in stop_iter:
-                    #if self.stop_signal_present[i] == True:
-                        #if self.trial_num in self.stop_list_trials_list[i]:
-                            #if self.chosen_action == 'stop': 
-                               # FS = 0
-                           # else: 
-                                #FS = 1
-                                
-                #print("RT_alpha:", self.alpha_RT)
-                #print("RT_target:", self.target_RT)
                 agent.motor_queued = None
-               
 
 
         if agent.phase == 2:
@@ -489,10 +521,23 @@ def mega_loop(self):
                 agent.stoptimer = [0 for i in stop_iter]
 #                 agent.stoptimer_2 = 0
                 agent.opttimer = [0 for i in opt_iter]
+                agent.late_stop_active = [False for i in stop_iter]
+                agent.late_stop_timer = [0 for i in stop_iter]
+                #agent.failed_stop_trigger = False
+
                 agent.gain = np.ones(len(actionchannels))
 
                 print('trial type:', datatables_ttype, self.trial_num-1)
                 print('stop onset, trial:', datatables_stoponset, self.trial_num-1)
+
+                if datatables_ttype=='stop':
+                    if is_late_stop:
+                        datatables_stopduration = late_stop_duration
+                    else: 
+                        datatables_stopduration = stop_duration[i]
+                else: 
+                    datatables_stopduration = None
+                    
                 print('stop duration, trial:', datatables_stopduration, self.trial_num-1)
                 
 
@@ -546,11 +591,34 @@ def mega_loop(self):
                     stop_type = 'early'
 
                 elif self.stop_signal_onset_type == 'late': 
-                    stop_onset = [np.round(np.random.normal(self.stop_signal_onset[i][0], self.stop_signal_onset[i][1]), 0) for i in stop_iter]
+                    stop_onset = [np.abs(np.round(np.random.normal(self.stop_signal_onset[i][0], self.stop_signal_onset[i][1]), 0)) for i in stop_iter]
                     stop_type = 'late'
 
-                for i in stop_iter:
-                    stop_duration = [self.choice_timeout- stop_onset[i]]
+                elif self.stop_signal_onset_type == "mixed": 
+                    
+                    if np.random.rand() < 0.9:
+
+                        if self.stop_signal_context == "early":
+                            
+                            stop_onset = [np.abs(np.round(np.random.normal(self.stop_signal_onset[i][0], self.stop_signal_onset[i][1]), 0)) for i in stop_iter]
+                            stop_type = 'early'
+
+                        elif self.stop_signal_context == "late": 
+
+                            stop_onset = [np.abs(np.round(np.random.normal(self.stop_signal_onset[i][0], self.stop_signal_onset[i][1]), 0)) for i in stop_iter]
+                            stop_type = 'late'
+                        
+                        elif self.stop_signal_context == "uniform":
+
+                            stop_onset = [np.round(np.random.uniform(self.stop_signal_onset[i][0], self.stop_signal_onset[i][1]), 0) for i in stop_iter]
+                            stop_type = 'uniform'
+
+                    
+                    else: 
+                        stop_onset = [np.random.choice(self.stop_signal_probes[i]) for i in stop_iter]
+                        stop_type = 'probe'
+
+                stop_duration = [self.choice_timeout - stop_onset[i] for i in stop_iter]
 
 
         if agent.phase == 0 and self.trial_num == self.n_trials:
@@ -576,8 +644,9 @@ def mega_loop(self):
                             # -------------------------
                             # CORRECT STOP → NO DECAY
                             # -------------------------
-                            
-                        if agent.motor_queued == -1 or datatables_decision=='stop': 
+                        is_correct_stop = (agent.motor_queued == -1 or datatables_decision == 'stop')
+   
+                        if is_correct_stop:
                             agent.CxS_decay_active = False
                             for action_idx in range(len(agent.stop_popids[i])):
                                 popid = agent.stop_popids[i][action_idx]
@@ -588,25 +657,50 @@ def mega_loop(self):
                             # -------------------------
                             
                         else:
+
+                            #agent.failed_stop_trigger = True      #1/5
+                            # --- DECAY GATING ---
+                            if agent.late_stop_active[i]:
+                                #print('agent.globaltimer',  agent.globaltimer)
+                                #print('agent.late_stop_end_time', agent.late_stop_end_time)
+                                if agent.globaltimer < agent.late_stop_end_time: #LATE FAILED STOP → wait until stimulustarttime + SSD + 10 ms
+                                    continue
+                            else:
+                                # EARLY FAILED STOP → decay starts after decision
+                                if current_rt_decay < stop_onset[i]:
+                                    continue
                                 
-                            if current_rt_decay < stop_onset[i]:
-                                continue
+                            #if current_rt_decay < stop_onset[i] and not agent.late_stop_active[i]:
+                                #continue
+                            
+                            if self.sustained_gain_present:  
+                                if not agent.CxS_decay_active:    
+                                    agent.CxS_decay_active = True
+                                    #agent.CxS_decay_start_time = agent.globaltimer #Time-based     
+                                    #agent.CxS_decay_start_trial = self.trial_num #Trial-based     
+                                    #for action_idx in range(len(agent.stop_popids[i])):             
+                                        #popid = agent.stop_popids[i][action_idx]                   
+                                        #agent.CxS_decay_amp[popid] = stop_amp[i]                    
                                 
-                            if not agent.CxS_decay_active:
-                                agent.CxS_decay_active = True
-                                agent.CxS_decay_start_time = agent.globaltimer #Time-based
-                                agent.CxS_decay_start_trial = self.trial_num #Trial-based
+                                        #agent.CxS_decay_amp[popid] = (agent.FreqExt_AMPA[popid] - agent.FreqExt_AMPA_basestim[popid])  
+                                
+                                
+                                # Apply decay EVERY timestep
+                                t = agent.globaltimer - agent.CxS_decay_start_time #Time-based
+                                #n = self.trial_num - agent.CxS_decay_start_trial #Trial-based
                                 for action_idx in range(len(agent.stop_popids[i])):
                                     popid = agent.stop_popids[i][action_idx]
-                                    agent.CxS_decay_amp[popid] = (agent.FreqExt_AMPA[popid] - agent.FreqExt_AMPA_basestim[popid])
-                            # Apply decay EVERY timestep
-                            t = agent.globaltimer - agent.CxS_decay_start_time #Time-based
-                            n = self.trial_num - agent.CxS_decay_start_trial #Trial-based
-                            for action_idx in range(len(agent.stop_popids[i])):
-                                popid = agent.stop_popids[i][action_idx]
-                                agent.FreqExt_AMPA[popid] = (agent.FreqExt_AMPA_basestim[popid]+ 0.5 * agent.CxS_decay_amp[popid] * 
+                                    agent.FreqExt_AMPA[popid] = (agent.FreqExt_AMPA_basestim[popid]+ 0.5 * agent.CxS_decay_amp[popid] * 
                                                              np.exp(-t/self.tau_CxS_decay))
-                        
+                            
+                            else:
+
+                                if not agent.late_stop_active[i]:
+                                    agent.CxS_decay_active = False
+                                    for action_idx in range(len(agent.stop_popids[i])):
+                                        popid = agent.stop_popids[i][action_idx]
+                                        agent.FreqExt_AMPA[popid] = agent.FreqExt_AMPA_basestim[popid]
+                                
                                         
                                     #agent.FreqExt_AMPA[popid] = (agent.FreqExt_AMPA[popid] - agent.FreqExt_AMPA_basestim[popid]) * 0.05 * np.exp((-(agent.globaltimer - current_rt_decay)/self.tau_CxS_decay)) + agent.FreqExt_AMPA_basestim[popid] #400000 #agent.phasetimer 
                     
@@ -623,10 +717,10 @@ def mega_loop(self):
                             else:
                                 pass
                             printed_rt_this_trial = True
-
+                        
                         if agent.CxS_decay_active:
                             t = agent.globaltimer - agent.CxS_decay_start_time #Time-based
-                            n = self.trial_num - agent.CxS_decay_start_trial #Trial-based
+                            #n = self.trial_num - agent.CxS_decay_start_trial #Trial-based
 
                             for action_idx in range(len(agent.stop_popids[i])):
                                 popid = agent.stop_popids[i][action_idx]
@@ -690,9 +784,8 @@ def mega_loop(self):
                             if agent.phase != int(which_phase[1]): # Stop stimulation if the phase is over
                                 popid = agent.opt_popids[i][action_idx]
                                 agent.FreqExt_AMPA[popid] = agent.FreqExt_AMPA_basestim[popid]
-                            
-                            
-                            
+
+        
         #Environment
         #print('self.chosen_action - before:', self.chosen_action)
             
@@ -764,7 +857,9 @@ def mega_loop(self):
                         self.chosen_action = None
                
             #self.chosen_action = None
+
             self.ttype = None
+            
                        
     #print('current_rt: ', current_rt)
     self.popfreqs = pd.DataFrame(agent.FRs)
